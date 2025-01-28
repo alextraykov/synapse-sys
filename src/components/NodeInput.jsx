@@ -3,11 +3,14 @@ import ReactFlow, {
   Handle, 
   Position,
   useNodesState,
-  useEdgesState
+  useEdgesState,
+  getCenter
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import styled from 'styled-components';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useOverlay } from '../context/OverlayContext';
+import { defaultIcon } from '../context/OverlayContext';
 
 const jitterKeyframes = `
   @keyframes jitter {
@@ -38,6 +41,12 @@ const NodeContainer = styled(motion.div)`
   position: relative;
   cursor: ${props => props.isDragging ? 'grabbing' : 'grab'};
   z-index: 1000;
+
+  &:hover {
+    .handle {
+      opacity: 0.5;
+    }
+  }
 `;
 
 const EditModeContent = styled(motion.div)`
@@ -70,43 +79,115 @@ const ViewModeActions = styled(motion.div)`
   }
 `;
 
+const handleJitterKeyframes = `
+  @keyframes handleJitter {
+    0% { transform: translate(0, 0); }
+    25% { transform: translate(0.5px, 0.5px); }
+    50% { transform: translate(-0.5px, -0.5px); }
+    75% { transform: translate(-0.5px, 0.5px); }
+    100% { transform: translate(0.5px, -0.5px); }
+  }
+`;
+
+// First, let's define our constants for the handle positions
+const HANDLE_PADDING = 32; // The default padding of the handle from the node
+const HANDLE_SIZE = 8;    // The width/height of the handle dot
+
 const CustomHandle = styled(Handle)`
-  width: 8px;
-  height: 8px;
+  width: ${HANDLE_SIZE}px;
+  height: ${HANDLE_SIZE}px;
   background: ${props => props.theme.terminal.text};
   border: 2px solid ${props => props.theme.terminal.border};
   opacity: 0;
-  transition: all 0.2s;
+  transition: all 0.1s cubic-bezier(0.2, 0.8, 0.2, 1);
   position: absolute;
 
+  // Add connection line styling
+  .react-flow__connection-path {
+    stroke: #0EF928 !important;
+    strokeWidth: 2;
+    filter: drop-shadow(0 0 8px #0EF928);
+    strokeLinecap: round;
+  }
+
   &.top {
-    top: -24px;
+    top: -${HANDLE_PADDING}px;
     left: 50%;
     transform: translateX(-50%);
+    
+    &.connecting {
+      top: 0;
+      transform: translate(-50%, -50%);
+      background: #000;
+      border: 2px solid #0EF928;
+      opacity: 1;
+      z-index: 1000;
+    }
   }
+  
   &.right {
-    right: -24px;
+    right: -72px;
     top: 50%;
     transform: translateY(-50%);
+    
+    &.connecting {
+      right: 0;
+      transform: translate(50%, -50%);
+      background: #000;
+      border: 2px solid #0EF928;
+      opacity: 1;
+      z-index: 1000;
+    }
   }
+  
   &.bottom {
-    bottom: -24px;
+    bottom: -72px;
     left: 50%;
     transform: translateX(-50%);
+    
+    &.connecting {
+      bottom: 0;
+      transform: translate(-50%, 50%);
+      background: #000;
+      border: 2px solid #0EF928;
+      opacity: 1;
+      z-index: 1000;
+    }
   }
+  
   &.left {
-    left: -24px;
+    left: -32px;
     top: 50%;
     transform: translateY(-50%);
+    
+    &.connecting {
+      left: 0;
+      transform: translate(-50%, -50%);
+      background: #000;
+      border: 2px solid #0EF928;
+      opacity: 1;
+      z-index: 1000;
+    }
   }
 
   &:hover {
     background: #0EF928;
-    transform: scale(1.2);
+    opacity: 1 !important;
   }
 `;
 
-const InputWrapper = styled.div``;
+const InputWrapper = styled.div`
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+`;
+
+const HeaderRow = styled.div`
+  display: flex;
+  align-items: center;
+  position: relative;
+  padding-left: 32px;  // Space for icon
+`;
 
 const Input = styled.input`
   background: none;
@@ -126,6 +207,13 @@ const Input = styled.input`
   &::placeholder {
     color: ${props => props.theme.terminal.text}80;
   }
+`;
+
+const ParagraphInput = styled(Input)`
+  font-size: 16px;  // Smaller than header
+  margin-top: 8px;
+  padding-left: 0;  // Remove left padding since it's full width
+  width: 100%;
 `;
 
 const ActionBar = styled.div`
@@ -187,6 +275,105 @@ const Tooltip = styled.div`
   }
 `;
 
+const PreviewPanel = styled(motion.div)`
+  margin-top: 12px;
+  border-top: 1px solid ${props => props.theme.terminal.border};
+  overflow: hidden;
+`;
+
+const PreviewContent = styled.div`
+  padding: 12px 0;
+  color: ${props => props.theme.terminal.text}80;
+  font-size: 14px;
+  max-height: 200px;
+  overflow-y: auto;
+`;
+
+const ViewContent = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const ViewIconWrapper = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+`;
+
+const ViewHeading = styled.h3`
+  margin: 0;
+  font-size: 20px;
+  font-weight: normal;
+  color: ${props => props.theme.terminal.text};
+`;
+
+const ViewParagraph = styled.p`
+  margin: 8px 0 0 40px;
+  color: ${props => props.theme.terminal.text};
+  opacity: 0.5;
+`;
+
+const SlidePanel = styled(motion.div)`
+  position: fixed;
+  bottom: 0;
+  right: 0;
+  width: 400px;
+  max-height: 70vh;
+  background: ${props => props.theme.terminal.bg};
+  border-top: 2px solid ${props => props.theme.terminal.border};
+  border-left: 2px solid ${props => props.theme.terminal.border};
+  padding: 24px;
+  z-index: 1000;
+  overflow-y: auto;
+  box-shadow: -8px -8px 0 -2px #000, -8px -8px 0 0 #05FD11;
+`;
+
+const OverlayHeading = styled.h2`
+  font-size: 24px;
+  color: ${props => props.theme.terminal.text};
+  margin-bottom: 16px;
+`;
+
+const OverlayParagraph = styled.p`
+  font-size: 16px;
+  color: ${props => props.theme.terminal.text}80;
+  line-height: 1.5;
+  white-space: pre-wrap;
+`;
+
+const OverlayActions = styled.div`
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  display: flex;
+  gap: 16px;
+
+  i {
+    font-size: 20px;
+    color: ${props => props.theme.terminal.text};
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.2s;
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+`;
+
+const EditIconWrapper = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  position: absolute;
+  left: 0;
+`;
+
 // Custom Node Component
 const CustomNodeComponent = ({ data }) => {
   const [isEditing, setIsEditing] = useState(true);
@@ -196,29 +383,21 @@ const CustomNodeComponent = ({ data }) => {
   const [inputType, setInputType] = useState('text');
   const nodeRef = useRef(null);
   const isDraggingRef = useRef(false);
+  const [hoveredArea, setHoveredArea] = useState(null);
+  const [isHovering, setIsHovering] = useState(false);
+  const [pastedContent, setPastedContent] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [paragraphs, setParagraphs] = useState([]);
+  const { showOverlay } = useOverlay();
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [connectingHandle, setConnectingHandle] = useState(null);
+  const connectingRef = useRef(false);
+  const handleRefs = useRef({});  // Store refs for each handle
 
   // Update hover detection with larger area
   const handleMouseMove = useCallback((e) => {
     if (isEditing) return;
-    
-    const rect = nodeRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const padding = 60; // Increased detection area
-
-    if (y < 0 && Math.abs(x - rect.width/2) < padding) {
-      setHoveredConnector('top');
-    } else if (x > rect.width && Math.abs(y - rect.height/2) < padding) {
-      setHoveredConnector('right');
-    } else if (y > rect.height && Math.abs(x - rect.width/2) < padding) {
-      setHoveredConnector('bottom');
-    } else if (x < 0 && Math.abs(y - rect.height/2) < padding) {
-      setHoveredConnector('left');
-    } else {
-      setHoveredConnector(null);
-    }
+    setIsHovering(true);  // Show all dots when hovering over node
   }, [isEditing]);
 
   // Update click outside handler
@@ -248,9 +427,15 @@ const CustomNodeComponent = ({ data }) => {
   const handleKeyDown = (e) => {
     if (isDragging) return;
 
-    if (e.key === 'Enter' && !e.shiftKey && inputValue.trim()) {
-      e.preventDefault();
-      setIsEditing(false);
+    if (e.key === 'Enter') {
+      if (e.shiftKey) {
+        // Add new paragraph
+        e.preventDefault();
+        setParagraphs([...paragraphs, '']);
+      } else if (inputValue.trim()) {
+        e.preventDefault();
+        setIsEditing(false);
+      }
     }
     if (e.key === 'Escape') {
       if (inputValue.trim()) {
@@ -267,9 +452,15 @@ const CustomNodeComponent = ({ data }) => {
     // Don't handle blur if we're dragging
     if (isDragging) return;
 
-    if (inputValue.trim()) {
-      setIsEditing(false);
-    }
+    // Check if the new focused element is within our node
+    setTimeout(() => {
+      const newFocusedElement = document.activeElement;
+      const isWithinNode = nodeRef.current?.contains(newFocusedElement);
+      
+      if (!isWithinNode && inputValue.trim()) {
+        setIsEditing(false);
+      }
+    }, 0);
   };
 
   // When local editing state changes, update parent
@@ -282,6 +473,108 @@ const CustomNodeComponent = ({ data }) => {
     isDraggingRef.current = !!data.isDragging;
     setIsDragging(!!data.isDragging);
   }, [data.isDragging]);
+
+  const handleAreaHover = (area) => {
+    setHoveredArea(area);
+    setIsHovering(true);
+  };
+
+  const handleAreaLeave = () => {
+    setHoveredArea(null);
+    setIsHovering(false);
+  };
+
+  const handlePaste = (e) => {
+    e.preventDefault();
+    
+    // Get clipboard content as HTML
+    const clipboardData = e.clipboardData;
+    const html = clipboardData.getData('text/html');
+    const text = clipboardData.getData('text');
+
+    if (html) {
+      // Parse the HTML content
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      
+      // Look for headings
+      const heading = doc.querySelector('h1, h2, h3, h4, h5, h6');
+      const title = heading ? heading.textContent : '';
+      
+      // Get remaining content
+      const content = text.replace(title, '').trim();
+      
+      // Update node with structured content
+      setPastedContent({
+        title,
+        content,
+        originalHtml: html
+      });
+
+      // Set the title as the input value
+      setInputValue(title);
+      
+      // Show preview panel with content
+      setShowPreview(true);
+    } else {
+      // Just plain text, use as is
+      setInputValue(text);
+    }
+  };
+
+  // Add paragraph change handler
+  const handleParagraphChange = (index, value) => {
+    const newParagraphs = [...paragraphs];
+    newParagraphs[index] = value;
+    setParagraphs(newParagraphs);
+  };
+
+  const handleShowOverlay = () => {
+    showOverlay({
+      title: inputValue,
+      paragraphs,
+      onEdit: () => setIsEditing(true)
+    });
+  };
+
+  const handleMouseDown = (event, position) => {
+    event.stopPropagation();
+    setIsConnecting(true);
+    setConnectingHandle(position);
+    connectingRef.current = true;
+  };
+
+  const handleMouseUp = (event) => {
+    if (connectingRef.current) {
+      setIsConnecting(false);
+      setConnectingHandle(null);
+      connectingRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => document.removeEventListener('mouseup', handleMouseUp);
+  }, []);
+
+  // Add this function to calculate connection point
+  const getConnectionPoint = useCallback((handle) => {
+    if (!isConnecting || connectingHandle !== handle) return null;
+    
+    // Return coordinates based on handle position
+    switch (handle) {
+      case 'top':
+        return { x: '50%', y: 0 }; // At the node's top border
+      case 'right':
+        return { x: '100%', y: '50%' }; // At the node's right border
+      case 'bottom':
+        return { x: '50%', y: '100%' }; // At the node's bottom border
+      case 'left':
+        return { x: 0, y: '50%' }; // At the node's left border
+      default:
+        return null;
+    }
+  }, [isConnecting, connectingHandle]);
 
   return (
     <>
@@ -328,6 +621,11 @@ const CustomNodeComponent = ({ data }) => {
           cursor: isDragging ? 'grabbing' : 'grab'
         }}
         isDragging={isDragging}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => {
+          setIsHovering(false);
+          setHoveredArea(null);
+        }}
       >
         <AnimatePresence mode="wait">
           {isEditing ? (
@@ -340,22 +638,29 @@ const CustomNodeComponent = ({ data }) => {
               style={{ cursor: isDragging ? 'grabbing' : 'text' }}
             >
               <InputWrapper>
-                <Input 
-                  autoFocus
-                  value={inputValue}
-                  onChange={handleInputChange}
-                  onKeyDown={handleKeyDown}
-                  onBlur={(e) => {
-                    // Prevent blur if we're dragging
-                    if (isDraggingRef.current) {
-                      e.preventDefault();
-                      e.target.focus(); // Keep focus on the input
-                      return;
-                    }
-                    handleInputBlur(e);
-                  }}
-                  placeholder="Type your note..."
-                />
+                <HeaderRow>
+                  <EditIconWrapper>
+                    {defaultIcon}
+                  </EditIconWrapper>
+                  <Input 
+                    autoFocus
+                    value={inputValue}
+                    onChange={handleInputChange}
+                    onKeyDown={handleKeyDown}
+                    onBlur={handleInputBlur}
+                    placeholder="Heading (⇧↵ for paragraph)"
+                    onPaste={handlePaste}
+                  />
+                </HeaderRow>
+                {paragraphs.map((paragraph, index) => (
+                  <ParagraphInput
+                    key={index}
+                    value={paragraph}
+                    onChange={(e) => handleParagraphChange(index, e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Continue writing..."
+                  />
+                ))}
               </InputWrapper>
               <ActionBar>
                 <ActionGroup>
@@ -410,7 +715,15 @@ const CustomNodeComponent = ({ data }) => {
               transition={{ duration: 0.1 }}
               whileHover="hover"
             >
-              <div className="node-content">{inputValue}</div>
+              <ViewContent>
+                <ViewIconWrapper>
+                  {defaultIcon}
+                </ViewIconWrapper>
+                <ViewHeading>{inputValue}</ViewHeading>
+                {paragraphs.length > 0 && (
+                  <ViewParagraph>{paragraphs[0]}</ViewParagraph>
+                )}
+              </ViewContent>
               <ViewModeActions
                 variants={{
                   hover: { 
@@ -425,8 +738,8 @@ const CustomNodeComponent = ({ data }) => {
                   onClick={() => setIsEditing(true)}
                 />
                 <i 
-                  className="hn hn-times"
-                  onClick={() => data.onRemove?.()}
+                  className="hn hn-eye"
+                  onClick={handleShowOverlay}
                 />
               </ViewModeActions>
             </motion.div>
@@ -438,30 +751,74 @@ const CustomNodeComponent = ({ data }) => {
             <CustomHandle 
               type="target" 
               position={Position.Top} 
-              className="top"
-              style={{ opacity: hoveredConnector === 'top' ? 1 : 0 }}
+              className={`top ${isConnecting && connectingHandle === 'top' ? 'connecting' : ''}`}
+              style={{ 
+                opacity: (isHovering && !isDragging) || (isConnecting && connectingHandle === 'top') ? 1 : 0
+              }}
+              isConnectable={!isEditing}
+              id={`${data.id}-top`}
+              ref={(el) => handleRefs.current['top'] = el}
+              onMouseDown={(e) => handleMouseDown(e, 'top')}
+              onConnect={(connection) => {
+                const handleElement = handleRefs.current['top'];
+                if (handleElement && isConnecting) {
+                  const rect = handleElement.getBoundingClientRect();
+                  connection.sourceX = rect.left + (rect.width / 2);
+                  connection.sourceY = rect.top;
+                }
+              }}
+            />
+            <CustomHandle 
+              type="source" 
+              position={Position.Right}
+              className={`right ${data.activeHandle === `${data.id}-right` ? 'dragging' : ''}`}
+              style={{ 
+                opacity: isHovering && !isDragging ? (hoveredArea === 'right' ? 1 : 0.5) : 0
+              }}
+              isConnectable={!isEditing}
+              id={`${data.id}-right`}
+              onMouseEnter={() => handleAreaHover('right')}
+              onMouseLeave={handleAreaLeave}
             />
             <CustomHandle 
               type="target" 
               position={Position.Left}
               className="left" 
-              style={{ opacity: hoveredConnector === 'left' ? 1 : 0 }}
-            />
-            <CustomHandle 
-              type="source" 
-              position={Position.Right}
-              className="right" 
-              style={{ opacity: hoveredConnector === 'right' ? 1 : 0 }}
+              style={{ 
+                opacity: isHovering && !isDragging ? (hoveredArea === 'left' ? 1 : 0.5) : 0
+              }}
+              isConnectable={!isEditing}
+              id={`${data.id}-left`}
+              onMouseEnter={() => handleAreaHover('left')}
+              onMouseLeave={handleAreaLeave}
             />
             <CustomHandle 
               type="source" 
               position={Position.Bottom}
               className="bottom" 
-              style={{ opacity: hoveredConnector === 'bottom' ? 1 : 0 }}
+              style={{ 
+                opacity: isHovering && !isDragging ? (hoveredArea === 'bottom' ? 1 : 0.5) : 0
+              }}
+              isConnectable={!isEditing}
+              id={`${data.id}-bottom`}
+              onMouseEnter={() => handleAreaHover('bottom')}
+              onMouseLeave={handleAreaLeave}
             />
           </>
         )}
       </NodeContainer>
+
+      {showPreview && pastedContent && (
+        <PreviewPanel
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+        >
+          <PreviewContent>
+            {pastedContent.content}
+          </PreviewContent>
+        </PreviewPanel>
+      )}
     </>
   );
 };
