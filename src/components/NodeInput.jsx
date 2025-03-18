@@ -1,10 +1,12 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import ReactFlow, { 
+import React, { useState, useCallback, useRef, useEffect, lazy, Suspense } from 'react';
+import { 
   Handle, 
   Position,
-  useNodesState,
-  useEdgesState,
-  getCenter
+  // Remove unused imports:
+  // ReactFlow,
+  // useNodesState,
+  // useEdgesState,
+  // getCenter
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import styled from 'styled-components';
@@ -22,7 +24,24 @@ const jitterKeyframes = `
   }
 `;
 
-const ShadowLayer = styled(motion.div)`
+const edgeAnimationKeyframes = `
+  @keyframes flowAnimation {
+    from {
+      stroke-dashoffset: 20;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+`;
+
+const ShadowLayer = styled(motion.div).attrs(props => ({
+  style: {
+    filter: props.isDragging 
+      ? 'drop-shadow(32px 32px 0px #000000) drop-shadow(48px 48px 0px #05FD11)'
+      : 'drop-shadow(0px 0px 0px #000000) drop-shadow(0px 0px 0px #05FD11)'
+  }
+}))`
   position: absolute;
   top: 0;
   left: 0;
@@ -94,6 +113,8 @@ const HANDLE_PADDING = 32; // The default padding of the handle from the node
 const HANDLE_SIZE = 8;    // The width/height of the handle dot
 
 const CustomHandle = styled(Handle)`
+  ${handleJitterKeyframes}
+  ${edgeAnimationKeyframes}
   width: ${HANDLE_SIZE}px;
   height: ${HANDLE_SIZE}px;
   background: ${props => props.theme.terminal.text};
@@ -102,22 +123,16 @@ const CustomHandle = styled(Handle)`
   transition: all 0.1s cubic-bezier(0.2, 0.8, 0.2, 1);
   position: absolute;
 
-  // Add connection line styling
-  .react-flow__connection-path {
-    stroke: #0EF928 !important;
-    strokeWidth: 2;
-    filter: drop-shadow(0 0 8px #0EF928);
-    strokeLinecap: round;
+  &.react-flow__handle {
+    z-index: 1;
   }
 
   &.top {
-    top: -${HANDLE_PADDING}px;
+    top: -${HANDLE_SIZE/2}px;
     left: 50%;
     transform: translateX(-50%);
     
     &.connecting {
-      top: 0;
-      transform: translate(-50%, -50%);
       background: #000;
       border: 2px solid #0EF928;
       opacity: 1;
@@ -126,13 +141,11 @@ const CustomHandle = styled(Handle)`
   }
   
   &.right {
-    right: -72px;
+    right: -${HANDLE_SIZE/2}px;
     top: 50%;
     transform: translateY(-50%);
     
     &.connecting {
-      right: 0;
-      transform: translate(50%, -50%);
       background: #000;
       border: 2px solid #0EF928;
       opacity: 1;
@@ -141,13 +154,11 @@ const CustomHandle = styled(Handle)`
   }
   
   &.bottom {
-    bottom: -72px;
+    bottom: -${HANDLE_SIZE/2}px;
     left: 50%;
     transform: translateX(-50%);
     
     &.connecting {
-      bottom: 0;
-      transform: translate(-50%, 50%);
       background: #000;
       border: 2px solid #0EF928;
       opacity: 1;
@@ -156,13 +167,11 @@ const CustomHandle = styled(Handle)`
   }
   
   &.left {
-    left: -32px;
+    left: -${HANDLE_SIZE/2}px;
     top: 50%;
     transform: translateY(-50%);
     
     &.connecting {
-      left: 0;
-      transform: translate(-50%, -50%);
       background: #000;
       border: 2px solid #0EF928;
       opacity: 1;
@@ -234,7 +243,7 @@ const ActionButton = styled.button`
   border: none;
   cursor: pointer;
   padding: 4px;
-  opacity: ${props => props.active ? '1' : '0.7'};
+  opacity: ${props => props.$active ? '1' : '0.7'};
   transition: all 0.2s;
   position: relative;
   display: flex;
@@ -275,21 +284,36 @@ const Tooltip = styled.div`
   }
 `;
 
-const PreviewPanel = styled(motion.div)`
-  margin-top: 12px;
-  border-top: 1px solid ${props => props.theme.terminal.border};
-  overflow: hidden;
+const PreviewContent = styled.div`
+  font-size: 16px;
+  color: ${props => props.theme.terminal.text};
+  line-height: 1.5;
+  padding: 12px 0;
+  white-space: pre-wrap;
 `;
 
-const PreviewContent = styled.div`
-  padding: 12px 0;
-  color: ${props => props.theme.terminal.text}80;
-  font-size: 14px;
-  max-height: 200px;
+const PreviewPanel = styled(motion.div)`
+  position: fixed;
+  bottom: 0;
+  right: 0;
+  width: 400px;
+  max-height: 70vh;
+  background: ${props => props.theme.terminal.bg};
+  border-top: 2px solid ${props => props.theme.terminal.border};
+  border-left: 2px solid ${props => props.theme.terminal.border};
+  padding: 24px;
+  z-index: 1000;
   overflow-y: auto;
+  box-shadow: -8px -8px 0 -2px #000, -8px -8px 0 0 #05FD11;
 `;
 
 const ViewContent = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+`;
+
+const ViewHeader = styled.div`
   display: flex;
   align-items: center;
   gap: 8px;
@@ -311,7 +335,8 @@ const ViewHeading = styled.h3`
 `;
 
 const ViewParagraph = styled.p`
-  margin: 8px 0 0 40px;
+  margin: 0;
+  padding-left: 40px;
   color: ${props => props.theme.terminal.text};
   opacity: 0.5;
 `;
@@ -375,7 +400,7 @@ const EditIconWrapper = styled.div`
 `;
 
 // Custom Node Component
-const CustomNodeComponent = ({ data }) => {
+const CustomNodeComponent = React.memo(({ data }) => {
   const [isEditing, setIsEditing] = useState(true);
   const [inputValue, setInputValue] = useState(data.content || '');
   const [isDragging, setIsDragging] = useState(false);
@@ -542,6 +567,21 @@ const CustomNodeComponent = ({ data }) => {
     setIsConnecting(true);
     setConnectingHandle(position);
     connectingRef.current = true;
+    
+    // Log handle position - make sure handleRefs is properly initialized
+    if (handleRefs.current && handleRefs.current[position]) {
+      const handleElement = handleRefs.current[position];
+      const rect = handleElement.getBoundingClientRect();
+      const nodeRect = nodeRef.current.getBoundingClientRect();
+      
+      console.log('Handle DOM position:', {
+        position,
+        handleX: rect.left + rect.width/2,
+        handleY: rect.top + rect.height/2,
+        nodeEdgeX: position === 'left' ? nodeRect.left : position === 'right' ? nodeRect.right : rect.left + rect.width/2,
+        nodeEdgeY: position === 'top' ? nodeRect.top : position === 'bottom' ? nodeRect.bottom : rect.top + rect.height/2
+      });
+    }
   };
 
   const handleMouseUp = (event) => {
@@ -575,6 +615,72 @@ const CustomNodeComponent = ({ data }) => {
         return null;
     }
   }, [isConnecting, connectingHandle]);
+
+  // Memoize expensive calculations or components
+  const handles = React.useMemo(() => {
+    if (isEditing) return null;
+    
+    return (
+      <>
+        <CustomHandle 
+          type="target" 
+          position={Position.Top} 
+          className={`top ${isConnecting && connectingHandle === 'top' ? 'connecting' : ''}`}
+          style={{ 
+            opacity: (isHovering && !isDragging) || (isConnecting && connectingHandle === 'top') ? 1 : 0
+          }}
+          isConnectable={!isEditing}
+          id={`${data.id}-top`}
+          ref={(el) => handleRefs.current['top'] = el}
+          onMouseDown={(e) => handleMouseDown(e, 'top')}
+          onConnect={(connection) => {
+            const handleElement = handleRefs.current['top'];
+            if (handleElement && isConnecting) {
+              const rect = handleElement.getBoundingClientRect();
+              connection.sourceX = rect.left + (rect.width / 2);
+              connection.sourceY = rect.top;
+            }
+          }}
+        />
+        <CustomHandle 
+          type="source" 
+          position={Position.Right}
+          className={`right ${data.activeHandle === `${data.id}-right` ? 'dragging' : ''}`}
+          style={{ 
+            opacity: isHovering && !isDragging ? (hoveredArea === 'right' ? 1 : 0.5) : 0
+          }}
+          isConnectable={!isEditing}
+          id={`${data.id}-right`}
+          onMouseEnter={() => handleAreaHover('right')}
+          onMouseLeave={handleAreaLeave}
+        />
+        <CustomHandle 
+          type="target" 
+          position={Position.Left}
+          className="left" 
+          style={{ 
+            opacity: isHovering && !isDragging ? (hoveredArea === 'left' ? 1 : 0.5) : 0
+          }}
+          isConnectable={!isEditing}
+          id={`${data.id}-left`}
+          onMouseEnter={() => handleAreaHover('left')}
+          onMouseLeave={handleAreaLeave}
+        />
+        <CustomHandle 
+          type="source" 
+          position={Position.Bottom}
+          className="bottom" 
+          style={{ 
+            opacity: isHovering && !isDragging ? (hoveredArea === 'bottom' ? 1 : 0.5) : 0
+          }}
+          isConnectable={!isEditing}
+          id={`${data.id}-bottom`}
+          onMouseEnter={() => handleAreaHover('bottom')}
+          onMouseLeave={handleAreaLeave}
+        />
+      </>
+    );
+  }, [isEditing, isHovering, isDragging, hoveredArea, isConnecting, connectingHandle, data.id, data.activeHandle, handleMouseDown, handleAreaHover, handleAreaLeave]);
 
   return (
     <>
@@ -666,7 +772,7 @@ const CustomNodeComponent = ({ data }) => {
                 <ActionGroup>
                   <ActionButton 
                     aria-label="Upload Document"
-                    active={inputType === 'document'}
+                    $active={inputType === 'document'}
                     onClick={() => handleTypeChange('document')}
                   >
                     <i className="hn hn-file-import"></i>
@@ -674,7 +780,7 @@ const CustomNodeComponent = ({ data }) => {
                   </ActionButton>
                   <ActionButton 
                     aria-label="Upload Image"
-                    active={inputType === 'image'}
+                    $active={inputType === 'image'}
                     onClick={() => handleTypeChange('image')}
                   >
                     <i className="hn hn-image"></i>
@@ -682,7 +788,7 @@ const CustomNodeComponent = ({ data }) => {
                   </ActionButton>
                   <ActionButton 
                     aria-label="External Link"
-                    active={inputType === 'link'}
+                    $active={inputType === 'link'}
                     onClick={() => handleTypeChange('link')}
                   >
                     <i className="hn hn-external-link"></i>
@@ -716,10 +822,12 @@ const CustomNodeComponent = ({ data }) => {
               whileHover="hover"
             >
               <ViewContent>
-                <ViewIconWrapper>
-                  {defaultIcon}
-                </ViewIconWrapper>
-                <ViewHeading>{inputValue}</ViewHeading>
+                <ViewHeader>
+                  <ViewIconWrapper>
+                    {defaultIcon}
+                  </ViewIconWrapper>
+                  <ViewHeading>{inputValue}</ViewHeading>
+                </ViewHeader>
                 {paragraphs.length > 0 && (
                   <ViewParagraph>{paragraphs[0]}</ViewParagraph>
                 )}
@@ -746,81 +854,28 @@ const CustomNodeComponent = ({ data }) => {
           )}
         </AnimatePresence>
 
-        {!isEditing && (
-          <>
-            <CustomHandle 
-              type="target" 
-              position={Position.Top} 
-              className={`top ${isConnecting && connectingHandle === 'top' ? 'connecting' : ''}`}
-              style={{ 
-                opacity: (isHovering && !isDragging) || (isConnecting && connectingHandle === 'top') ? 1 : 0
-              }}
-              isConnectable={!isEditing}
-              id={`${data.id}-top`}
-              ref={(el) => handleRefs.current['top'] = el}
-              onMouseDown={(e) => handleMouseDown(e, 'top')}
-              onConnect={(connection) => {
-                const handleElement = handleRefs.current['top'];
-                if (handleElement && isConnecting) {
-                  const rect = handleElement.getBoundingClientRect();
-                  connection.sourceX = rect.left + (rect.width / 2);
-                  connection.sourceY = rect.top;
-                }
-              }}
-            />
-            <CustomHandle 
-              type="source" 
-              position={Position.Right}
-              className={`right ${data.activeHandle === `${data.id}-right` ? 'dragging' : ''}`}
-              style={{ 
-                opacity: isHovering && !isDragging ? (hoveredArea === 'right' ? 1 : 0.5) : 0
-              }}
-              isConnectable={!isEditing}
-              id={`${data.id}-right`}
-              onMouseEnter={() => handleAreaHover('right')}
-              onMouseLeave={handleAreaLeave}
-            />
-            <CustomHandle 
-              type="target" 
-              position={Position.Left}
-              className="left" 
-              style={{ 
-                opacity: isHovering && !isDragging ? (hoveredArea === 'left' ? 1 : 0.5) : 0
-              }}
-              isConnectable={!isEditing}
-              id={`${data.id}-left`}
-              onMouseEnter={() => handleAreaHover('left')}
-              onMouseLeave={handleAreaLeave}
-            />
-            <CustomHandle 
-              type="source" 
-              position={Position.Bottom}
-              className="bottom" 
-              style={{ 
-                opacity: isHovering && !isDragging ? (hoveredArea === 'bottom' ? 1 : 0.5) : 0
-              }}
-              isConnectable={!isEditing}
-              id={`${data.id}-bottom`}
-              onMouseEnter={() => handleAreaHover('bottom')}
-              onMouseLeave={handleAreaLeave}
-            />
-          </>
-        )}
+        {handles}
       </NodeContainer>
 
       {showPreview && pastedContent && (
-        <PreviewPanel
-          initial={{ height: 0, opacity: 0 }}
-          animate={{ height: 'auto', opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-        >
-          <PreviewContent>
-            {pastedContent.content}
-          </PreviewContent>
-        </PreviewPanel>
+        <Suspense fallback={<div>Loading preview...</div>}>
+          <PreviewPanel
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+          >
+            <PreviewContent>
+              {pastedContent.content}
+            </PreviewContent>
+          </PreviewPanel>
+        </Suspense>
       )}
     </>
   );
-};
+});
 
-export const CustomNode = CustomNodeComponent;
+// Adding displayName for improved debugging
+CustomNodeComponent.displayName = 'CustomNodeComponent';
+
+// Export the memoized component to prevent recreation of nodeTypes
+export const CustomNode = React.memo(CustomNodeComponent);

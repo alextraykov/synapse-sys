@@ -1,13 +1,17 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import ReactFlow, { 
   useNodesState, 
   useEdgesState,
-  Controls
+  Controls,
+  MarkerType,
+  getSmoothStepPath
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import styled from 'styled-components';
 import { CustomNode } from './NodeInput';
 import Navbar from './Navbar';
+import CustomEdge from './CustomEdge';
+import CustomConnectionLine from './CustomConnectionLine';
 
 const WhiteboardContainer = styled.div`
   width: 100vw;
@@ -106,8 +110,93 @@ const VignetteOverlay = styled.div`
   z-index: 1; // Above canvas but below navbar
 `;
 
-const nodeTypes = {
-  custom: CustomNode
+// Fix styled component using a transient prop
+const AnimatedComponent = styled.div`
+  animation: ${props => props.$delay ? `fadeIn ${props.$delay}s` : 'none'};
+  // other styles...
+`;
+
+// Fix the edge implementation (rename or replace the existing one)
+const TerminalEdge = ({ 
+  id, 
+  source, 
+  target, 
+  sourceX, 
+  sourceY, 
+  targetX, 
+  targetY,
+  sourcePosition,
+  targetPosition,
+  data,
+  style = {} 
+}) => {
+  // Calculate the path
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    borderRadius: 16,
+  });
+
+  return (
+    <>
+      {/* Optional glow effect layer */}
+      <path
+        style={{
+          stroke: 'rgba(14, 249, 40, 0.2)',
+          strokeWidth: 6,
+          filter: 'blur(4px)',
+        }}
+        d={edgePath}
+        fill="none"
+      />
+      {/* Main edge path */}
+      <path
+        id={id}
+        style={{
+          stroke: '#0EF928',
+          strokeWidth: 2,
+          strokeDasharray: '5,5',
+          ...style,
+        }}
+        className="react-flow__edge-path"
+        d={edgePath}
+        markerEnd="url(#terminal-arrow)"
+        fill="none"
+      />
+      
+      {/* Optional label */}
+      {data?.label && (
+        <foreignObject
+          width={100}
+          height={40}
+          x={labelX - 50}
+          y={labelY - 20}
+          className="edgebutton-foreignobject"
+          requiredExtensions="http://www.w3.org/1999/xhtml"
+        >
+          <div
+            style={{
+              background: '#000',
+              color: '#0EF928',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              fontFamily: 'VT323, monospace',
+              fontSize: '14px',
+              border: '1px solid #0EF928',
+              textAlign: 'center',
+              boxShadow: '0 0 8px rgba(14, 249, 40, 0.5)',
+            }}
+          >
+            {data.label}
+          </div>
+        </foreignObject>
+      )}
+    </>
+  );
 };
 
 const Whiteboard = () => {
@@ -118,6 +207,7 @@ const Whiteboard = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [rippleCenter, setRippleCenter] = useState(null);
   const [showRipple, setShowRipple] = useState(false);
+  const [selectedEdges, setSelectedEdges] = useState([]);
 
   // Calculate grid dimensions based on viewport
   const gridSize = {
@@ -197,33 +287,67 @@ const Whiteboard = () => {
     setNodes(nodes => [...nodes, newNode]);
   }, [position, zoom]);
 
+  // Define edge types with our renamed component
+  const edgeTypes = useMemo(() => ({
+    terminal: TerminalEdge
+  }), []);
+  
+  // Updated onConnect to use the renamed edge type
   const onConnect = useCallback((params) => {
-    setEdges(edges => [...edges, params]);
+    setEdges(edges => [
+      ...edges,
+      {
+        ...params,
+        type: 'terminal', // Use renamed edge type
+        animated: true,
+        data: {
+          label: 'connection'
+        },
+        style: {
+          stroke: '#0EF928',
+          strokeDasharray: '5,5',
+        },
+      }
+    ]);
   }, []);
 
-  // Add ripple effect to the grid
-  const renderRipple = () => {
-    if (!showRipple || !rippleCenter) return null;
+  // Memoize nodeTypes and edgeTypes to prevent recreation on each render
+  const nodeTypes = useMemo(() => ({ 
+    custom: CustomNode 
+  }), []);
 
-    const rippleDots = [];
-    for (let y = -3; y <= 2; y++) {
-      for (let x = -3; x <= 2; x++) {
-        const distance = Math.sqrt(x * x + y * y);
-        if (distance <= 3) {
-          rippleDots.push(
-            <RippleDot
-              key={`ripple-${x}-${y}`}
-              cx={rippleCenter.x + ((x * 24) * zoom)}
-              cy={rippleCenter.y + ((y * 24) * zoom)}
-              r={dotSize}
-              delay={distance * 0.05}
-            />
-          );
-        }
-      }
-    }
-    return rippleDots;
-  };
+  // Handle edge click
+  const onEdgeClick = useCallback((event, edge) => {
+    event.stopPropagation();
+    setSelectedEdges(prev => 
+      prev.includes(edge.id) 
+        ? prev.filter(id => id !== edge.id) 
+        : [...prev, edge.id]
+    );
+  }, []);
+  
+  // Process edges with selection state
+  const processedEdges = useMemo(() => {
+    return edges.map(edge => {
+      const isSelected = selectedEdges.includes(edge.id);
+      return {
+        ...edge,
+        style: {
+          ...edge.style,
+          stroke: isSelected ? '#ffffff' : '#0EF928',
+          strokeWidth: isSelected ? 3 : 2,
+          filter: isSelected 
+            ? 'drop-shadow(0 0 12px rgba(255, 255, 255, 0.7))' 
+            : 'drop-shadow(0 0 8px rgba(14, 249, 40, 0.5))',
+        },
+      };
+    });
+  }, [edges, selectedEdges]);
+  
+  // Handle canvas click to clear selection
+  const onPaneClick = useCallback(() => {
+    setSelectedEdges([]);
+  }, []);
 
   return (
     <WhiteboardContainer>
@@ -269,17 +393,19 @@ const Whiteboard = () => {
               </pattern>
             </defs>
             <rect width="100%" height="100%" fill="url(#dot-pattern)" />
-            {renderRipple()}
           </svg>
         </DotGrid>
       )}
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={processedEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onEdgeClick={onEdgeClick}
+        onPaneClick={onPaneClick}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onDoubleClick={handleDoubleClick}
         zoomOnDoubleClick={false}
         fitView={false}
@@ -306,8 +432,44 @@ const Whiteboard = () => {
           setPosition({ x: viewState.x, y: viewState.y });
           setZoom(viewState.zoom);
         }}
+        connectionLineComponent={CustomConnectionLine}
       >
         <Controls />
+        
+        {/* Add SVG defs for custom markers */}
+        <svg style={{ position: 'absolute', width: 0, height: 0 }}>
+          <defs>
+            <marker
+              id="terminal-arrow"
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#0EF928" />
+            </marker>
+          </defs>
+        </svg>
+        
+        {/* Add keyframe animation */}
+        <style>
+          {`
+            @keyframes flowAnimation {
+              from {
+                stroke-dashoffset: 20;
+              }
+              to {
+                stroke-dashoffset: 0;
+              }
+            }
+            
+            .react-flow__edge-path {
+              animation: flowAnimation 1s linear infinite;
+            }
+          `}
+        </style>
       </ReactFlow>
     </WhiteboardContainer>
   );

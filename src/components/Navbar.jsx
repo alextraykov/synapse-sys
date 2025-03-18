@@ -38,7 +38,7 @@ const Logo = styled(motion.div)`
 
 const AnimatedNumber = styled(motion.span)`
   display: inline-block;
-  color: ${props => props.flashing ? '#0EF928' : 'inherit'};
+  color: ${props => props.$flashing ? '#0EF928' : 'inherit'};
 `;
 
 const NodeLabel = styled(motion.span)`
@@ -127,17 +127,7 @@ const Stats = ({ nodeCount }) => {
         >
           NUMBER OF NODES:
         </NodeLabel>{' '}
-        <AnimatedNumber
-          key={nodeCount}
-          initial={{ y: -20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{
-            type: "spring",
-            stiffness: 500,
-            damping: 30
-          }}
-          flashing={isFlashing}
-        >
+        <AnimatedNumber $flashing={isFlashing}>
           {nodeCount}
         </AnimatedNumber>
       </StatsItem>
